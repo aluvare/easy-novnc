@@ -1,145 +1,268 @@
-// +build novnc_generate
+//go:build ignore
 
 package main
 
 import (
 	"archive/zip"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
-
-	"github.com/shurcooL/vfsgen"
-	"github.com/spkg/zipfs"
+	"strings"
 )
 
-//const noVNCZip = "https://github.com/novnc/noVNC/archive/master.zip"
-const noVNCZip = "https://github.com/juanjoDiaz/noVNC/archive/refs/heads/add_clipboard_support.zip"
-const vncScript = `
-	try {
-		function parseQuery(e){for(var o=e.split("&"),n={},t=0;t<o.length;t++){var d=o[t].split("="),p=decodeURIComponent(d[0]),r=decodeURIComponent(d[1]);if(void 0===n[p])n[p]=decodeURIComponent(r);else if("string"==typeof n[p]){var i=[n[p],decodeURIComponent(r)];n[p]=i}else n[p].push(decodeURIComponent(r))}return n};
-		fetch(parseQuery(window.location.search.replace(/^\?/, ""))["path"]).then(function(resp) {
+const (
+	noVNCVersion = "1.6.0"
+	noVNCURL     = "https://github.com/novnc/noVNC/archive/refs/tags/v" + noVNCVersion + ".zip"
+	noVNCDir     = "novnc"
+)
+
+const vncScript = `<script>
+try {
+	var params = new URLSearchParams(window.location.search);
+	var path = params.get("path");
+	if (path) {
+		fetch(path).then(function(resp) {
 			return resp.text();
-		}).then(function (txt) {
-			if (txt.indexOf("not websocket") == -1) alert(txt);
+		}).then(function(txt) {
+			if (txt.indexOf("not websocket") === -1) alert(txt);
 		});
-	} catch (ex) {
-		console.log(ex);
 	}
-`
+} catch(ex) {
+	console.log(ex);
+}
+</script>`
+
+// moduleBridge exposes the noVNC UI instance to non-module scripts.
+const moduleBridge = `<script type="module">
+import UI from "./app/ui.js";
+window._noVNC_UI = UI;
+</script>`
+
+// typeTextAddon injects a "Type Text" button and overlay into the noVNC UI.
+const typeTextAddon = `<script>
+(function() {
+    "use strict";
+
+    function charToKeysym(ch) {
+        var cp = ch.codePointAt(0);
+        if (cp === 0x0A) return 0xFF0D;  // newline -> Return
+        if (cp === 0x0D) return 0xFF0D;  // CR -> Return
+        if (cp === 0x09) return 0xFF09;  // Tab
+        if (cp === 0x08) return 0xFF08;  // Backspace
+        if (cp === 0x1B) return 0xFF1B;  // Escape
+        if (cp >= 0x20 && cp <= 0xFF) return cp;  // Latin-1 direct
+        return 0x01000000 | cp;  // Unicode keysym
+    }
+
+    function typeText(rfb, text, delayMs) {
+        var chars = Array.from(text);
+        var i = 0;
+        function next() {
+            if (i >= chars.length) return;
+            var ks = charToKeysym(chars[i]);
+            rfb.sendKey(ks);
+            i++;
+            if (i < chars.length) {
+                setTimeout(next, delayMs);
+            }
+        }
+        next();
+    }
+
+    function init() {
+        var ui = window._noVNC_UI;
+        if (!ui) {
+            setTimeout(init, 200);
+            return;
+        }
+
+        // --- Overlay panel ---
+        var overlay = document.createElement("div");
+        overlay.id = "noVNC_type_text_overlay";
+        overlay.style.cssText = "display:none;position:fixed;top:0;left:0;width:100%;height:100%;" +
+            "background:rgba(0,0,0,0.5);z-index:10000;align-items:center;justify-content:center;";
+
+        var panel = document.createElement("div");
+        panel.style.cssText = "background:#2b2b2b;color:#e0e0e0;border-radius:8px;padding:20px;" +
+            "width:90%;max-width:420px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;";
+
+        var title = document.createElement("div");
+        title.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;";
+        title.innerHTML = '<span style="font-size:1.1rem;font-weight:600;">Type Text</span>';
+
+        var closeBtn = document.createElement("button");
+        closeBtn.textContent = "\u00D7";
+        closeBtn.style.cssText = "background:none;border:none;color:#e0e0e0;font-size:1.5rem;cursor:pointer;padding:0 4px;";
+        closeBtn.onclick = function() { overlay.style.display = "none"; };
+        title.appendChild(closeBtn);
+
+        var textarea = document.createElement("textarea");
+        textarea.placeholder = "Paste or type text here...";
+        textarea.style.cssText = "width:100%;height:120px;background:#1a1a1a;color:#e0e0e0;border:1px solid #555;" +
+            "border-radius:6px;padding:10px;font-family:monospace;font-size:0.9rem;resize:vertical;box-sizing:border-box;";
+
+        var opts = document.createElement("div");
+        opts.style.cssText = "display:flex;align-items:center;gap:12px;margin-top:12px;";
+
+        var delayLabel = document.createElement("label");
+        delayLabel.style.cssText = "font-size:0.85rem;white-space:nowrap;";
+        delayLabel.textContent = "Delay (ms):";
+
+        var delayInput = document.createElement("input");
+        delayInput.type = "number";
+        delayInput.value = "50";
+        delayInput.min = "0";
+        delayInput.max = "2000";
+        delayInput.style.cssText = "width:70px;background:#1a1a1a;color:#e0e0e0;border:1px solid #555;" +
+            "border-radius:4px;padding:4px 8px;font-size:0.85rem;";
+
+        var sendBtn = document.createElement("button");
+        sendBtn.textContent = "Type";
+        sendBtn.style.cssText = "margin-left:auto;background:#3b82f6;color:#fff;border:none;border-radius:6px;" +
+            "padding:8px 20px;font-size:0.9rem;font-weight:500;cursor:pointer;";
+        sendBtn.onmouseenter = function() { sendBtn.style.background = "#2563eb"; };
+        sendBtn.onmouseleave = function() { sendBtn.style.background = "#3b82f6"; };
+        sendBtn.onclick = function() {
+            var rfb = ui.rfb;
+            if (!rfb) { alert("Not connected to VNC"); return; }
+            var text = textarea.value;
+            if (!text) return;
+            var delay = parseInt(delayInput.value, 10) || 50;
+            overlay.style.display = "none";
+            typeText(rfb, text, delay);
+        };
+
+        opts.appendChild(delayLabel);
+        opts.appendChild(delayInput);
+        opts.appendChild(sendBtn);
+
+        panel.appendChild(title);
+        panel.appendChild(textarea);
+        panel.appendChild(opts);
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        overlay.addEventListener("click", function(e) {
+            if (e.target === overlay) overlay.style.display = "none";
+        });
+
+        // --- Control bar button ---
+        var controlbar = document.getElementById("noVNC_control_bar");
+        if (controlbar) {
+            var clipBtn = document.getElementById("noVNC_clipboard_button");
+            var btn = document.createElement("button");
+            btn.id = "noVNC_type_text_button";
+            btn.className = "noVNC_button";
+            btn.title = "Type Text";
+            btn.style.cssText = "display:flex;align-items:center;justify-content:center;";
+            btn.innerHTML = '<img src="app/images/keyboard.svg" alt="Type Text" style="width:24px;height:24px;filter:invert(1);">';
+            btn.onclick = function() {
+                overlay.style.display = "flex";
+                textarea.value = "";
+                textarea.focus();
+            };
+            if (clipBtn && clipBtn.nextSibling) {
+                controlbar.insertBefore(btn, clipBtn.nextSibling);
+            } else {
+                controlbar.appendChild(btn);
+            }
+        }
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", function() { setTimeout(init, 500); });
+    } else {
+        setTimeout(init, 500);
+    }
+})();
+</script>`
 
 func main() {
-	resp, err := http.Get(noVNCZip)
+	fmt.Printf("Downloading noVNC v%s...\n", noVNCVersion)
+
+	resp, err := http.Get(noVNCURL)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error downloading noVNC: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "Error downloading noVNC: HTTP %d\n", resp.StatusCode)
+		os.Exit(1)
 	}
 
-	f, err := ioutil.TempFile("", "novnc*.zip")
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error reading response: %v\n", err)
+		os.Exit(1)
 	}
 
-	_, err = io.Copy(f, resp.Body)
+	// Remove existing directory
+	os.RemoveAll(noVNCDir)
+
+	// Extract ZIP
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error reading ZIP: %v\n", err)
+		os.Exit(1)
 	}
 
-	f.Close()
-	resp.Body.Close()
+	prefix := fmt.Sprintf("noVNC-%s/", noVNCVersion)
+	var foundVNC bool
 
-	err = modifyZip(f.Name())
-	if err != nil {
-		panic(err)
-	}
+	for _, f := range zr.File {
+		if !strings.HasPrefix(f.Name, prefix) {
+			continue
+		}
 
-	zfs, err := zipfs.New(f.Name())
-	if err != nil {
-		panic(err)
-	}
+		relPath := strings.TrimPrefix(f.Name, prefix)
+		if relPath == "" {
+			continue
+		}
 
-	err = vfsgen.Generate(zfs, vfsgen.Options{
-		Filename:        "novnc_generated.go",
-		PackageName:     "main",
-		VariableName:    "noVNC",
-		VariableComment: "noVNC is the latest version of noVNC from GitHub as a http.FileSystem",
-	})
-	if err != nil {
-		panic(err)
-	}
-}
+		targetPath := filepath.Join(noVNCDir, relPath)
 
-// modifyZip adds the custom easy-novnc code into the noVNC zip file.
-func modifyZip(zf string) error {
-	buf, err := ioutil.ReadFile(zf)
-	if err != nil {
-		return err
-	}
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(targetPath, 0755)
+			continue
+		}
 
-	zr, err := zip.NewReader(bytes.NewReader(buf), int64(len(buf)))
-	if err != nil {
-		return err
-	}
+		os.MkdirAll(filepath.Dir(targetPath), 0755)
 
-	f, err := os.Create(zf)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	zw := zip.NewWriter(f)
-	defer zw.Close()
-
-	var found bool
-	for _, e := range zr.File {
-		var w io.Writer
-
-		rc, err := e.Open()
+		rc, err := f.Open()
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "Error extracting %s: %v\n", f.Name, err)
+			os.Exit(1)
 		}
 
-		fbuf, err := ioutil.ReadAll(rc)
-		if err != nil {
-			return err
-		}
-
-		if filepath.Base(e.Name) == "vnc.html" {
-			found = true
-			fbuf = bytes.ReplaceAll(fbuf, []byte("</body>"), []byte(fmt.Sprintf("<script>%s</script></body>", vncScript)))
-			fi, err := os.Stat("novnc_generate.go")
-			if err != nil {
-				return err
-			}
-			w, err = zw.CreateHeader(&zip.FileHeader{
-				Name:          e.Name,
-				Flags:         e.Flags,
-				Method:        e.Method,
-				Modified:      fi.ModTime(),
-				Extra:         e.Extra,
-				ExternalAttrs: e.ExternalAttrs,
-			})
-		} else {
-			w, err = zw.CreateHeader(&e.FileHeader)
-		}
-
-		if err != nil {
-			return err
-		}
-
-		_, err = io.Copy(w, bytes.NewReader(fbuf))
-		if err != nil {
-			return err
-		}
+		data, err := io.ReadAll(rc)
 		rc.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", f.Name, err)
+			os.Exit(1)
+		}
+
+		// Inject custom scripts into vnc.html
+		if filepath.Base(targetPath) == "vnc.html" {
+			foundVNC = true
+			data = bytes.ReplaceAll(data, []byte("</head>"), []byte(moduleBridge+"\n</head>"))
+			data = bytes.ReplaceAll(data, []byte("</body>"), []byte(vncScript+"\n"+typeTextAddon+"\n</body>"))
+		}
+
+		if err := os.WriteFile(targetPath, data, f.Mode()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", targetPath, err)
+			os.Exit(1)
+		}
 	}
 
-	if !found {
-		return errors.New("could not find vnc.html")
+	if !foundVNC {
+		fmt.Fprintf(os.Stderr, "Error: vnc.html not found in noVNC archive\n")
+		os.Exit(1)
 	}
 
-	return nil
+	fmt.Printf("noVNC v%s extracted to %s/\n", noVNCVersion, noVNCDir)
 }

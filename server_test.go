@@ -6,18 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gorilla/mux"
 )
 
 func TestVNCHandler(t *testing.T) {
@@ -36,13 +31,11 @@ func TestVNCHandler(t *testing.T) {
 						panic(err)
 					}
 				}()
-				vnc := vncHandler(defhost, defport, false, allowHosts, allowPorts, cidrList, isWhitelist)
-				m := mux.NewRouter()
+				vnc := vncHandler(defhost, defport, false, allowHosts, allowPorts, cidrList, isWhitelist, nil)
+				m := http.NewServeMux()
 				m.Handle("/vnc", vnc)
-				m.Handle("/vnc/{host:[a-zA-Z0-9_.-]+}", vnc)
-				m.Handle("/vnc/{host:[a-zA-Z0-9_.-]+}/{port:[0-9]+}", vnc)
-				m.Handle("/vnc/{host:"+ipv6Regexp+"}", vnc)
-				m.Handle("/vnc/{host:"+ipv6Regexp+"}/{port:[0-9]+}", vnc)
+				m.Handle("/vnc/{host}", vnc)
+				m.Handle("/vnc/{host}/{port}", vnc)
 				m.ServeHTTP(w, r)
 			}()
 
@@ -72,20 +65,10 @@ func TestVNCHandler(t *testing.T) {
 	t.Run("CIDRBlacklistBlockIP", testCase("http://example.com/vnc/10.0.0.1", 401, "", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), false))
 	t.Run("CIDRBlacklistAllowIP", testCase("http://example.com/vnc/127.0.0.1/5900", 101, "127.0.0.1:5900", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), false))
 
-	t.Run("CIDRWhitelistAllowHost", testCase("http://example.com/vnc/10.0.0.1.ip.dns.geek1011.net", 101, "10.0.0.1.ip.dns.geek1011.net:5900", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), true))
-	t.Run("CIDRWhitelistBlockHost", testCase("http://example.com/vnc/127.0.0.1.ip.dns.geek1011.net", 401, "", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), true))
-	t.Run("CIDRBlacklistBlockHost", testCase("http://example.com/vnc/10.0.0.1.ip.dns.geek1011.net", 401, "", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), false))
-	t.Run("CIDRBlacklistAllowHost", testCase("http://example.com/vnc/127.0.0.1.ip.dns.geek1011.net/5900", 101, "127.0.0.1.ip.dns.geek1011.net:5900", "localhost", 5900, true, true, mustParseCIDRList("192.168.0.0/24,10.0.0.0/24"), false))
-
 	t.Run("CIDRWhitelistAllowIPv6", testCase("http://example.com/vnc/a%3Ab%3Ac%3Ad%3Aa%3Ab%3Ac%3Ad", 101, "[a:b:c:d:a:b:c:d]:5900", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true))
 	t.Run("CIDRWhitelistBlockIPv6", testCase("http://example.com/vnc/a%3Ab%3Ac%3Ad%3Aa%3Ab%3Ad%3Ad", 401, "", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true))
 	t.Run("CIDRBlacklistBlockIPv6", testCase("http://example.com/vnc/a%3Ab%3Ac%3Ad%3Aa%3Ab%3Ac%3Ad", 401, "", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false))
 	t.Run("CIDRBlacklistAllowIPv6", testCase("http://example.com/vnc/a%3Ab%3Ac%3Ad%3Aa%3Ab%3Ad%3Ad/5900", 101, "[a:b:c:d:a:b:d:d]:5900", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false))
-
-	t.Run("CIDRWhitelistAllowHostv6", testCase("http://example.com/vnc/a.b.c.d.a.b.c.d.ip.dns.geek1011.net", 101, "a.b.c.d.a.b.c.d.ip.dns.geek1011.net:5900", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true))
-	t.Run("CIDRWhitelistBlockHostv6", testCase("http://example.com/vnc/a.b.c.d.a.b.d.d.ip.dns.geek1011.net", 401, "", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true))
-	t.Run("CIDRBlacklistBlockHostv6", testCase("http://example.com/vnc/a.b.c.d.a.b.c.d.ip.dns.geek1011.net", 401, "", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false))
-	t.Run("CIDRBlacklistAllowHostv6", testCase("http://example.com/vnc/a.b.c.d.a.b.d.d.ip.dns.geek1011.net/5900", 101, "a.b.c.d.a.b.d.d.ip.dns.geek1011.net:5900", "localhost", 5900, true, true, mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false))
 }
 
 func TestWebsockify(t *testing.T) {
@@ -95,7 +78,6 @@ func TestWebsockify(t *testing.T) {
 		}
 	}()
 	websockify("google.com:80", []byte(nil)).ServeHTTP(nilResponseWriter{}, httptest.NewRequest("GET", "/", nil))
-	// TODO: proper testing
 }
 
 type nilResponseWriter struct{}
@@ -116,14 +98,12 @@ func TestLogf(t *testing.T) {
 		Cond   bool
 		Format string
 		Args   []interface{}
-		Out    string
 	}{
-		{false, "test\n", nil, ""},
-		{true, "test\n", nil, "test"},
-		{true, "test %s\n", []interface{}{"test"}, "test test"},
+		{false, "test\n", nil},
+		{true, "test\n", nil},
+		{true, "test %s\n", []interface{}{"test"}},
 	} {
 		logf(c.Cond, c.Format, c.Args...)
-		// TODO: figure out a way to test c.Out
 	}
 }
 
@@ -151,63 +131,112 @@ func TestServerHeader(t *testing.T) {
 	}
 }
 
-func TestFS(t *testing.T) {
-	d, err := ioutil.TempDir("", "easy-novnc")
-	if err != nil {
-		panic(err)
-	}
-	defer os.RemoveAll(d)
+func TestBasicAuth(t *testing.T) {
+	handler := basicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), "admin", "secret")
 
-	err = ioutil.WriteFile(filepath.Join(d, "test.txt"), []byte("foo"), 0644)
-	if err != nil {
-		panic(err)
-	}
-
-	err = os.Mkdir(filepath.Join(d, "tmp"), 0755)
-	if err != nil {
-		panic(err)
-	}
-
-	err = ioutil.WriteFile(filepath.Join(d, "tmp", "test.txt"), []byte("foobar"), 0644)
-	if err != nil {
-		panic(err)
-	}
-
-	r := httptest.NewRequest("GET", "http://example.com/test.txt", nil)
-	w := httptest.NewRecorder()
-
-	fs("tmp", http.Dir(d)).ServeHTTP(w, r)
-
-	buf, _ := ioutil.ReadAll(w.Result().Body)
-	if !strings.Contains(string(buf), "foo") {
-		if !strings.Contains(string(buf), "foobar") {
-			t.Errorf("serving from wrong subdir, got %#v", string(buf))
+	t.Run("NoCredentials", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Result().StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Result().StatusCode)
 		}
-		t.Errorf("wrong response, got %#v", string(buf))
-	}
+	})
+
+	t.Run("WrongCredentials", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.SetBasicAuth("admin", "wrong")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Result().StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Result().StatusCode)
+		}
+	})
+
+	t.Run("CorrectCredentials", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.SetBasicAuth("admin", "secret")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Result().StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", w.Result().StatusCode)
+		}
+	})
+
+	t.Run("HealthzBypassesAuth", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/healthz", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Result().StatusCode != http.StatusOK {
+			t.Errorf("expected 200 for /healthz without auth, got %d", w.Result().StatusCode)
+		}
+	})
 }
 
-func TestAddPrefix(t *testing.T) {
-	for _, c := range [][]string{
-		{"", "http://example.com/", "http://example.com/"},
-		{"prefix", "http://example.com/", "http://example.com/prefix/"},
-		{"prefix", "http://example.com/test", "http://example.com/prefix/test"},
-		{"prefix", "http://example.com/test/", "http://example.com/prefix/test/"},
-		{"prefix/prefix1", "http://example.com/test/", "http://example.com/prefix/prefix1/test/"},
-		{"prefix", "/test/", "prefix/test/"},
-	} {
-		r := httptest.NewRequest("GET", c[1], nil)
-		w := httptest.NewRecorder()
+func TestConnectionLimiting(t *testing.T) {
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{} // fill the semaphore
 
-		addPrefix(c[0], http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, r.URL.String())
-		})).ServeHTTP(w, r)
+	vnc := vncHandler("localhost", 5900, false, false, false, nil, false, sem)
 
-		buf, _ := ioutil.ReadAll(w.Result().Body)
-		if string(buf) != c[2] {
-			t.Errorf("expected %#v for addPrefix %#v to %#v, got %#v", c[2], c[0], c[1], string(buf))
-		}
+	r := httptest.NewRequest("GET", "http://example.com/vnc", nil)
+	w := httptest.NewRecorder()
+	vnc.ServeHTTP(w, r)
+
+	if w.Result().StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when connections full, got %d", w.Result().StatusCode)
 	}
+
+	<-sem // free the slot
+}
+
+func TestNoVNCEmbed(t *testing.T) {
+	sub, err := fs.Sub(novncFS, "novnc")
+	if err != nil {
+		t.Fatalf("could not get novnc sub-filesystem: %v", err)
+	}
+
+	// Check vnc.html exists and has content
+	f, err := sub.Open("vnc.html")
+	if err != nil {
+		t.Fatalf("could not open vnc.html: %v", err)
+	}
+	defer f.Close()
+
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("could not read vnc.html: %v", err)
+	}
+
+	if len(buf) < 100 {
+		t.Errorf("vnc.html is too small (%d bytes)", len(buf))
+	}
+
+	// Check that custom script was injected
+	if !bytes.Contains(buf, []byte("not websocket")) {
+		t.Errorf("vnc.html does not contain injected script")
+	}
+
+	// Walk all files to verify integrity
+	count := 0
+	err = fs.WalkDir(sub, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Errorf("could not walk embedded filesystem: %v", err)
+	}
+	if count < 10 {
+		t.Errorf("expected at least 10 embedded files, got %d", count)
+	}
+	t.Logf("embedded %d noVNC files", count)
 }
 
 func TestCopyCh(t *testing.T) {
@@ -227,7 +256,7 @@ func TestCopyCh(t *testing.T) {
 				} else if shouldError && err == nil {
 					t.Errorf("expected error")
 				}
-				if time.Now().Sub(n) < r.MinTime() {
+				if time.Since(n) < r.MinTime() {
 					t.Errorf("returned too fast")
 				}
 			case <-time.After(time.Second):
@@ -252,14 +281,14 @@ func TestCIDRBlackWhiteList(t *testing.T) {
 			}
 		}
 	}
-	t.Run("WhitelistAllow", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), true, []string{"10.0.0.1", "127.0.1.1", "10.0.0.9.ip.dns.geek1011.net"}, false))
-	t.Run("WhitelistBlock", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), true, []string{"11.0.0.1", "1.0.1.1", "1.2.3.4.ip.dns.geek1011.net"}, true))
-	t.Run("BlacklistAllow", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), false, []string{"11.0.0.1", "1.0.1.1", "1.2.3.4.ip.dns.geek1011.net"}, false))
-	t.Run("BlacklistBlock", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), false, []string{"10.0.0.1", "127.0.1.1", "10.0.0.9.ip.dns.geek1011.net"}, true))
-	t.Run("WhitelistAllowv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true, []string{"a:b:c:d:a:b:c:d", "a:b:c:d:a:b:c:a", "a.b.c.d.a.b.c.d.ip.dns.geek1011.net"}, false))
-	t.Run("WhitelistBlockv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true, []string{"a:b:c:d:a:b:d:d", "a:b:c:d:a:b:d:a", "a.b.c.d.a.b.d.d.ip.dns.geek1011.net"}, true))
-	t.Run("BlacklistAllowv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false, []string{"a:b:c:d:a:b:d:d", "a:b:c:d:a:b:d:a", "a.b.c.d.a.b.d.d.ip.dns.geek1011.net"}, false))
-	t.Run("BlacklistBlockv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false, []string{"a:b:c:d:a:b:c:d", "a:b:c:d:a:b:c:a", "a.b.c.d.a.b.c.d.ip.dns.geek1011.net"}, true))
+	t.Run("WhitelistAllow", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), true, []string{"10.0.0.1", "127.0.1.1"}, false))
+	t.Run("WhitelistBlock", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), true, []string{"11.0.0.1", "1.0.1.1"}, true))
+	t.Run("BlacklistAllow", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), false, []string{"11.0.0.1", "1.0.1.1"}, false))
+	t.Run("BlacklistBlock", testCase(mustParseCIDRList("10.0.0.0/24,127.0.0.0/16"), false, []string{"10.0.0.1", "127.0.1.1"}, true))
+	t.Run("WhitelistAllowv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true, []string{"a:b:c:d:a:b:c:d", "a:b:c:d:a:b:c:a"}, false))
+	t.Run("WhitelistBlockv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), true, []string{"a:b:c:d:a:b:d:d", "a:b:c:d:a:b:d:a"}, true))
+	t.Run("BlacklistAllowv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false, []string{"a:b:c:d:a:b:d:d", "a:b:c:d:a:b:d:a"}, false))
+	t.Run("BlacklistBlockv6", testCase(mustParseCIDRList("a:b:c:d:a:b:c:d/120"), false, []string{"a:b:c:d:a:b:c:d", "a:b:c:d:a:b:c:a"}, true))
 }
 
 func TestParseCIDRList(t *testing.T) {
@@ -287,42 +316,6 @@ func TestParseCIDRList(t *testing.T) {
 	_, err = parseCIDRList(strs)
 	if err == nil {
 		t.Errorf("expected error: when parsing erroneous list")
-	}
-}
-
-func TestIPv6Regexp(t *testing.T) {
-	re := regexp.MustCompile(ipv6Regexp)
-	for _, ipv6 := range []string{
-		"1:2:3:4:5:6:7:8",
-		"1::",
-		"1:2:3:4:5:6:7::",
-		"1::8",
-		"1:2:3:4:5:6::8",
-		"1:2:3:4:5:6::8",
-		"1::7:8",
-		"1:2:3:4:5::7:8",
-		"1:2:3:4:5::8",
-		"1::5:6:7:8",
-		"1:2:3::5:6:7:8",
-		"1:2:3::8",
-		"1::4:5:6:7:8",
-		"1:2::4:5:6:7:8",
-		"1:2::8",
-		"::2:3:4:5:6:7:8",
-		"::2:3:4:5:6:7:8",
-		"::8",
-		"::",
-		"fe80::7:8%eth0",
-		"fe80::7:8%1",
-		"::255.255.255.255",
-		"::ffff:255.255.255.255",
-		"::ffff:0:255.255.255.255",
-		"2001:db8:3:4::192.0.2.33",
-		"64:ff9b::192.0.2.33",
-	} {
-		if !re.MatchString(ipv6) {
-			t.Errorf("expected regexp to match %#v", ipv6)
-		}
 	}
 }
 

@@ -4,53 +4,185 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <meta name="robots" content="noindex">
     <title>noVNC</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.8.4/dist/semantic.min.css">
-    <!-- easy-novnc (https://github.com/pgaskin/easy-novnc) -->
     <style>
-        body {
-            background: #f4f4f4;
+        :root {
+            --bg: #f4f4f5;
+            --card-bg: #ffffff;
+            --card-border: #d4d4d8;
+            --card-shadow: rgba(0, 0, 0, 0.08);
+            --text: #18181b;
+            --text-muted: #71717a;
+            --input-bg: #ffffff;
+            --input-border: #d4d4d8;
+            --input-focus: #3b82f6;
+            --btn-bg: #3b82f6;
+            --btn-hover: #2563eb;
+            --btn-text: #ffffff;
+            --divider: #e4e4e7;
+            --label: #3f3f46;
+            --check-bg: #3b82f6;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #18181b;
+                --card-bg: #27272a;
+                --card-border: #3f3f46;
+                --card-shadow: rgba(0, 0, 0, 0.3);
+                --text: #fafafa;
+                --text-muted: #a1a1aa;
+                --input-bg: #3f3f46;
+                --input-border: #52525b;
+                --input-focus: #60a5fa;
+                --btn-bg: #3b82f6;
+                --btn-hover: #60a5fa;
+                --btn-text: #ffffff;
+                --divider: #3f3f46;
+                --label: #d4d4d8;
+                --check-bg: #3b82f6;
+            }
         }
 
         * {
             box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
         }
 
         .wrapper {
             display: flex;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
+            padding: 16px;
         }
 
         .connect {
-            display: block;
-            flex: 0 0 auto;
-            margin: 24px auto;
             width: 100%;
-            max-width: 400px;
-            overflow-y: auto;
-            max-height: 90vh;
-            background: #fff;
-            border: 1px solid #d3d3d3;
-            border-radius: 5px;
-            padding: 24px;
-            box-shadow: 0 2px 6px 0 rgba(0, 0, 0, 0.1);
+            max-width: 420px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 4px 12px var(--card-shadow);
         }
 
-        @media only screen and (max-width: 520px) {
+        h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            padding-bottom: 12px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--divider);
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--label);
+            margin-bottom: 6px;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        input[type="password"] {
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 0.9375rem;
+            border: 1px solid var(--input-border);
+            border-radius: 8px;
+            background: var(--input-bg);
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        input[type="password"]:focus {
+            border-color: var(--input-focus);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .checkbox-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--check-bg);
+            cursor: pointer;
+        }
+
+        .checkbox-item label {
+            margin-bottom: 0;
+            font-size: 0.8125rem;
+            cursor: pointer;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 10px 20px;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--btn-text);
+            background: var(--btn-bg);
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+
+        .btn:hover {
+            background: var(--btn-hover);
+        }
+
+        @media only screen and (max-width: 480px) {
             .connect {
-                flex: 1;
-                margin: 0;
-                height: 100%;
-                min-height: 100%;
-                max-height: 100%;
-                width: 100%;
-                min-width: 100%;
-                max-width: 100%;
                 border: none;
+                border-radius: 0;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }
+
+            .wrapper {
+                padding: 0;
             }
         }
     </style>
@@ -59,30 +191,30 @@
 <body>
     <div class="wrapper">
         <div class="connect">
-            <h3 class="ui dividing header">noVNC</h3>
-            <form action="/vnc.html" method="GET" class="ui form">
+            <h3>noVNC</h3>
+            <form action="/vnc.html" method="GET">
                 {{if .arbitraryHosts}}
                 {{if .arbitraryPorts}}
-                <div class="two fields">
-                    <div class="field">
+                <div class="form-row">
+                    <div class="form-group">
                         <label for="host">Host</label>
                         <input type="text" id="host" placeholder="{{.host}}" autocomplete="off">
                     </div>
-                    <div class="field">
+                    <div class="form-group">
                         <label for="port">Port</label>
                         <input type="number" id="port" min="1" max="65535" placeholder="{{.port}}" autocomplete="off">
                     </div>
                 </div>
                 {{else}}
-                <div class="field">
+                <div class="form-group">
                     <label for="host">Host</label>
-                    <input type="text" id="host" placeholder="{{.host}}">
+                    <input type="text" id="host" placeholder="{{.host}}" autocomplete="off">
                 </div>
                 {{end}}
                 {{end}}
 
                 {{if not .noURLPassword}}
-                <div class="field">
+                <div class="form-group">
                     <label for="password">Password</label>
                     <input type="password" name="password" id="password" placeholder="Password" autofocus>
                 </div>
@@ -95,45 +227,35 @@
                 <input type="hidden" name="{{$key}}" id="{{$key}}" value="{{$value}}">
                 {{end}}
 
-                <input class="ui button" type="submit" value="Connect">
-
                 {{if not .basicUI}}
-                <h3 class="ui dividing header">Connection Options</h3>
+                <h3>Connection Options</h3>
 
-                <div class="two fields">
-                    <div class="inline field">
-                        <div class="ui checkbox">
-                            <input type="checkbox" name="reconnect" id="reconnect" value="true" checked>
-                            <label for="reconnect">Reconnect automatically</label>
-                        </div>
+                <div class="checkbox-group">
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="reconnect" id="reconnect" value="true" checked>
+                        <label for="reconnect">Auto-reconnect</label>
                     </div>
-                    <div class="inline field">
-                        <div class="ui checkbox">
-                            <input type="checkbox" name="show_dot" id="show_dot" value="true" checked>
-                            <label for="show_dot">Show dot when no cursor</label>
-                        </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="show_dot" id="show_dot" value="true" checked>
+                        <label for="show_dot">Show dot cursor</label>
                     </div>
-                </div>
-                <div class="two fields">
-                    <div class="inline field">
-                        <div class="ui checkbox">
-                            <input type="checkbox" name="bell" id="bell" value="true">
-                            <label for="bell">Enable bell</label>
-                        </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="bell" id="bell" value="on">
+                        <label for="bell">Enable bell</label>
                     </div>
-                    <div class="inline field">
-                        <div class="ui checkbox">
-                            <input type="checkbox" name="view_only" id="view_only" value="true" {{if .defaultViewOnly}}checked{{end}}>
-                            <label for="view_only">View only</label>
-                        </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="view_only" id="view_only" value="true" {{if .defaultViewOnly}}checked{{end}}>
+                        <label for="view_only">View only</label>
                     </div>
                 </div>
                 {{else}}
                 <input type="hidden" name="reconnect" id="reconnect" value="true">
                 <input type="hidden" name="show_dot" id="show_dot" value="true">
-                <input type="hidden" name="bell" id="bell" value="false">
+                <input type="hidden" name="bell" id="bell" value="off">
                 <input type="hidden" name="view_only" id="view_only" value="{{if .defaultViewOnly}}true{{else}}false{{end}}">
                 {{end}}
+
+                <button type="submit" class="btn">Connect</button>
             </form>
         </div>
     </div>
@@ -144,9 +266,9 @@
 
         function updatePath() {
             var addr = "vnc";
-            if (host && host.value.trim() != "") {
+            if (host && host.value.trim() !== "") {
                 addr = addr + "/" + encodeURIComponent(host.value.trim());
-                if (port && port.value.toString().trim() != "") {
+                if (port && port.value.toString().trim() !== "") {
                     addr = addr + "/" + port.value.toString().trim();
                 }
             }
@@ -155,14 +277,9 @@
 
         if (host) {
             host.addEventListener("input", updatePath);
-            host.addEventListener("keyup", updatePath);
-            host.addEventListener("blur", updatePath);
         }
-
         if (port) {
             port.addEventListener("input", updatePath);
-            port.addEventListener("keyup", updatePath);
-            port.addEventListener("blur", updatePath);
         }
     </script>
 </body>

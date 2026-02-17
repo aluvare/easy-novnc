@@ -1,29 +1,34 @@
-// +build !index_generate
-// +build !novnc_generate
-
 package main
 
 import (
+	"context"
+	"embed"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/spf13/pflag"
 	"golang.org/x/net/websocket"
 )
 
 //go:generate go run novnc_generate.go
-//go:generate go run index_generate.go
 
-// https://stackoverflow.com/a/17871737
-var ipv6Regexp = `(?:(?:[0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:(?:(?::[0-9a-fA-F]{1,4}){1,6})|:(?:(?::[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(?::[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(?:ffff(?::0{1,4}){0,1}:){0,1}(?:(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])|(?:[0-9a-fA-F]{1,4}:){1,4}:(?:(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(?:25[0-5]|(?:2[0-4]|1{0,1}[0-9]){0,1}[0-9]))`
+//go:embed novnc
+var novncFS embed.FS
+
+//go:embed index.html
+var indexHTML string
+
+var indexTMPL = template.Must(template.New("index").Parse(indexHTML))
 
 func main() {
 	pflag.Usage = func() {
@@ -43,21 +48,31 @@ func main() {
 	noURLPassword := pflag.Bool("no-url-password", false, "Do not allow password in URL params")
 	novncParams := pflag.StringSlice("novnc-params", nil, "Extra URL params for noVNC (advanced) (comma separated key-value pairs) (e.g. resize=remote)")
 	defaultViewOnly := pflag.Bool("default-view-only", false, "Use view-only by default")
+	tlsCert := pflag.String("tls-cert", "", "Path to TLS certificate file")
+	tlsKey := pflag.String("tls-key", "", "Path to TLS key file")
+	authUser := pflag.String("basic-auth-user", "", "Username for HTTP basic auth")
+	authPass := pflag.String("basic-auth-password", "", "Password for HTTP basic auth")
+	maxConns := pflag.Int("max-connections", 0, "Maximum concurrent VNC connections (0 = unlimited)")
 	help := pflag.Bool("help", false, "Show this help text")
 
 	envmap := map[string]string{
-		"arbitrary-hosts":   "NOVNC_ARBITRARY_HOSTS",
-		"arbitrary-ports":   "NOVNC_ARBITRARY_PORTS",
-		"cidr-whitelist":    "NOVNC_CIDR_WHITELIST",
-		"cidr-blacklist":    "NOVNC_CIDR_BLACKLIST",
-		"host":              "NOVNC_HOST",
-		"port":              "NOVNC_PORT",
-		"addr":              "NOVNC_ADDR",
-		"basic-ui":          "NOVNC_BASIC_UI",
-		"no-url-password":   "NOVNC_NO_URL_PASSWORD",
-		"novnc-params":      "NOVNC_PARAMS",
-		"default-view-only": "NOVNC_DEFAULT_VIEW_ONLY",
-		"verbose":           "NOVNC_VERBOSE",
+		"arbitrary-hosts":     "NOVNC_ARBITRARY_HOSTS",
+		"arbitrary-ports":     "NOVNC_ARBITRARY_PORTS",
+		"cidr-whitelist":      "NOVNC_CIDR_WHITELIST",
+		"cidr-blacklist":      "NOVNC_CIDR_BLACKLIST",
+		"host":                "NOVNC_HOST",
+		"port":                "NOVNC_PORT",
+		"addr":                "NOVNC_ADDR",
+		"basic-ui":            "NOVNC_BASIC_UI",
+		"no-url-password":     "NOVNC_NO_URL_PASSWORD",
+		"novnc-params":        "NOVNC_PARAMS",
+		"default-view-only":   "NOVNC_DEFAULT_VIEW_ONLY",
+		"verbose":             "NOVNC_VERBOSE",
+		"tls-cert":            "NOVNC_TLS_CERT",
+		"tls-key":             "NOVNC_TLS_KEY",
+		"basic-auth-user":     "NOVNC_BASIC_AUTH_USER",
+		"basic-auth-password": "NOVNC_BASIC_AUTH_PASSWORD",
+		"max-connections":     "NOVNC_MAX_CONNECTIONS",
 	}
 
 	if val, ok := os.LookupEnv("PORT"); ok {
@@ -84,8 +99,23 @@ func main() {
 
 	pflag.Parse()
 
+	if *help {
+		pflag.Usage()
+		os.Exit(1)
+	}
+
 	if *arbitraryPorts && !*arbitraryHosts {
 		fmt.Printf("Error: arbitrary-ports requires arbitrary-hosts to be enabled.\n")
+		os.Exit(2)
+	}
+
+	if (*tlsCert == "") != (*tlsKey == "") {
+		fmt.Printf("Error: both --tls-cert and --tls-key must be specified.\n")
+		os.Exit(2)
+	}
+
+	if (*authUser == "") != (*authPass == "") {
+		fmt.Printf("Error: both --basic-auth-user and --basic-auth-password must be specified.\n")
 		os.Exit(2)
 	}
 
@@ -111,9 +141,8 @@ func main() {
 			os.Exit(2)
 		}
 
-		// https://github.com/novnc/noVNC/blob/master/docs/EMBEDDING.md
 		switch spl[0] {
-		case "resize", "logging", "repeaterID", "reconnect_delay", "view_clip":
+		case "resize", "logging", "repeaterID", "reconnect_delay", "view_clip", "quality", "compression", "shared":
 			novncParamsMap[spl[0]] = spl[1]
 		case "encrypt", "reconnect", "path", "password", "view_only", "show_dot", "bell", "autoconnect":
 			fmt.Printf("Error: error parsing noVNC params: option %#v reserved for use by easy-novnc.\n", spl[0])
@@ -124,24 +153,28 @@ func main() {
 		}
 	}
 
-	if *help {
-		pflag.Usage()
-		os.Exit(1)
+	// Connection limiter
+	var connSem chan struct{}
+	if *maxConns > 0 {
+		connSem = make(chan struct{}, *maxConns)
 	}
 
-	r := mux.NewRouter()
-	r.Use(noCache)
-	r.Use(serverHeader)
+	// Setup routes
+	mux := http.NewServeMux()
 
-	vnc := vncHandler(*host, *port, *verbose, *arbitraryHosts, *arbitraryPorts, cidrList, isWhitelist)
-	r.Handle("/vnc", vnc)
-	r.Handle("/vnc/{host:[a-zA-Z0-9_.-]+}", vnc)
-	r.Handle("/vnc/{host:[a-zA-Z0-9_.-]+}/{port:[0-9]+}", vnc)
-	r.Handle("/vnc/{host:"+ipv6Regexp+"}", vnc)
-	r.Handle("/vnc/{host:"+ipv6Regexp+"}/{port:[0-9]+}", vnc)
+	vnc := vncHandler(*host, *port, *verbose, *arbitraryHosts, *arbitraryPorts, cidrList, isWhitelist, connSem)
+	mux.Handle("/vnc", vnc)
+	mux.Handle("/vnc/{host}", vnc)
+	mux.Handle("/vnc/{host}/{port}", vnc)
 
-	r.NotFoundHandler = fs("noVNC-master", noVNC)
-	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// Health check endpoint (bypasses auth)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	})
+
+	// Index page
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		indexTMPL.Execute(w, map[string]interface{}{
@@ -157,23 +190,63 @@ func main() {
 		})
 	})
 
+	// Serve noVNC static files
+	novncSub, err := fs.Sub(novncFS, "novnc")
+	if err != nil {
+		fmt.Printf("Error: failed to access embedded noVNC files: %v\n", err)
+		os.Exit(1)
+	}
+	mux.Handle("/", http.FileServer(http.FS(novncSub)))
+
+	// Apply middleware
+	var handler http.Handler = mux
+	handler = noCache(handler)
+	handler = serverHeader(handler)
+	if *authUser != "" {
+		handler = basicAuth(handler, *authUser, *authPass)
+	}
+
+	// Create server
+	srv := &http.Server{
+		Addr:    *addr,
+		Handler: handler,
+	}
+
+	// Graceful shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+		sig := <-sigCh
+		logf(true, "Received %s, shutting down...\n", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}()
+
 	fmt.Printf("Listening on http://%s\n", *addr)
 	if !*arbitraryHosts && !*arbitraryPorts && *host == "localhost" && *port == 5900 && !*basicUI {
 		fmt.Printf("Run with --help for more options\n")
 	}
-	if err := http.ListenAndServe(*addr, r); err != nil {
+
+	if *tlsCert != "" {
+		fmt.Printf("TLS enabled\n")
+		err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	} else {
+		err = srv.ListenAndServe()
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logf(true, "Error: %v.\n", err)
 		os.Exit(1)
 	}
 }
 
 // vncHandler creates a handler for vnc connections. If host and port are set in
-// the url vars, they will be used if allowed.
-func vncHandler(defhost string, defport uint16, verbose, allowHosts, allowPorts bool, cidrList []*net.IPNet, isWhitelist bool) http.Handler {
+// the URL path, they will be used if allowed.
+func vncHandler(defhost string, defport uint16, verbose, allowHosts, allowPorts bool, cidrList []*net.IPNet, isWhitelist bool, connSem chan struct{}) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var host, port string
 
-		if host = mux.Vars(r)["host"]; host == "" {
+		if host = r.PathValue("host"); host == "" {
 			host = defhost
 		} else if !allowHosts {
 			logf(verbose, "connect %s disabled\n", host)
@@ -181,7 +254,7 @@ func vncHandler(defhost string, defport uint16, verbose, allowHosts, allowPorts 
 			return
 		}
 
-		if port = mux.Vars(r)["port"]; port == "" {
+		if port = r.PathValue("port"); port == "" {
 			port = fmt.Sprint(defport)
 		} else if !allowPorts {
 			logf(verbose, "connect %s:%s disabled\n", host, port)
@@ -200,6 +273,17 @@ func vncHandler(defhost string, defport uint16, verbose, allowHosts, allowPorts 
 		addr := host + ":" + port
 		if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
 			addr = "[" + host + "]:" + port
+		}
+
+		// Connection limiting
+		if connSem != nil {
+			select {
+			case connSem <- struct{}{}:
+				defer func() { <-connSem }()
+			default:
+				http.Error(w, "too many connections", http.StatusServiceUnavailable)
+				return
+			}
 		}
 
 		logf(verbose, "connect %s\n", addr)
@@ -231,20 +315,21 @@ func serverHeader(next http.Handler) http.Handler {
 	})
 }
 
-// fs returns a http.Handler which serves a directory from a http.FileSystem.
-func fs(dir string, fs http.FileSystem) http.Handler {
-	return addPrefix("/"+strings.Trim(dir, "/"), http.FileServer(fs))
-}
-
-// addPrefix is similar to http.StripPrefix, except it adds a prefix.
-func addPrefix(prefix string, h http.Handler) http.Handler {
+// basicAuth adds HTTP Basic Authentication to a http.Handler.
+func basicAuth(next http.Handler, user, pass string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r2 := new(http.Request)
-		*r2 = *r
-		r2.URL = new(url.URL)
-		*r2.URL = *r.URL
-		r2.URL.Path = prefix + r.URL.Path
-		h.ServeHTTP(w, r2)
+		// Skip auth for health check
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, p, ok := r.BasicAuth()
+		if !ok || u != user || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="easy-novnc"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

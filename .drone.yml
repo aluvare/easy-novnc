@@ -1,9 +1,0 @@
-kind: pipeline
-name: default
-
-steps:
-- name: test
-  image: golang:1.14
-  commands:
-  - go mod download
-  - go test -v ./...
