@@ -164,8 +164,8 @@ const typeTextAddon = `<script>
                 textarea.value = "";
                 textarea.focus();
             };
-            if (clipBtn && clipBtn.nextSibling) {
-                controlbar.insertBefore(btn, clipBtn.nextSibling);
+            if (clipBtn && clipBtn.parentNode) {
+                clipBtn.parentNode.insertBefore(btn, clipBtn.nextSibling);
             } else {
                 controlbar.appendChild(btn);
             }
